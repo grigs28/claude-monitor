@@ -226,7 +226,7 @@ class SmartConfirmer:
                 if count % 30 == 0:
                     elapsed = int(time.time() - self.start_time)
                     skip_info = f" | 跳过 {self.same_content_count} 次" if self.same_content_count > 0 else ""
-                    print(f"[状态] 运行 {elapsed} 秒 | 确认 {self.confirm_count} 次{skip_info}", flush=True)
+                    print(f"[状态] 运行 {elapsed} 秒 | 确认 {self.confirm_count} 次{skip_info} | 内容未变化 哈哈🦐", flush=True)
                 
                 # 获取屏幕内容
                 content = self.get_screen_content()
@@ -238,16 +238,17 @@ class SmartConfirmer:
                 # 判断是否确认
                 if self.use_ai:
                     # 先检查是否需要问 AI
-                    should_ask_ai, reason = self.should_ask_ai(content)
+                    should_ask_ai, skip_reason = self.should_ask_ai(content)
                     
                     if should_ask_ai:
                         should_confirm, action, ai_reason = self.ai_based_decision(content)
-                        combined_reason = f"{ai_reason} ({reason})"
+                        combined_reason = f"{ai_reason} ({skip_reason})"
                     else:
-                        should_confirm, action, combined_reason = (False, "", reason)
+                        should_confirm, action, combined_reason = (False, "", skip_reason)
                         self.same_content_count += 1
                 else:
-                    should_confirm, action, combined_reason = self.rule_based_decision(content)
+                    should_confirm, action, skip_reason = self.rule_based_decision(content)
+                    combined_reason = skip_reason
                 
                 if should_confirm:
                     print(f"\n[检测] {reason}")
@@ -258,7 +259,7 @@ class SmartConfirmer:
                     # 等待避免重复
                     time.sleep(3)
                 else:
-                    if reason:  # 只在有原因时计数
+                    if skip_reason:  # 只在有原因时计数
                         self.skip_count += 1
                 
                 time.sleep(check_interval)
