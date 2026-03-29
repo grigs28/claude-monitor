@@ -31,6 +31,10 @@ class SmartConfirmer:
         self.confirm_count = 0
         self.skip_count = 0
         self.last_confirm_time = 0
+        
+        # AI 模式：内容去重
+        self.last_screen_hash = ""
+        self.same_content_count = 0  # 记录相同内容次数
     
     def load_env_config(self):
         """加载环境变量配置"""
@@ -97,6 +101,29 @@ class SmartConfirmer:
             return (True, action, "规则检测到确认提示")
         
         return (False, "", "未检测到确认提示")
+    
+    def get_screen_hash(self, content: str) -> str:
+        """生成屏幕内容哈希"""
+        import hashlib
+        # 只取最后 500 字符进行哈希
+        return hashlib.md5(content[-500:].encode()).hexdigest()[:16]
+    
+    def should_ask_ai(self, content: str) -> tuple:
+        """
+        判断是否应该询问 AI
+        返回: (should_ask, reason)
+        """
+        # 生成当前屏幕哈希
+        current_hash = self.get_screen_hash(content)
+        
+        # 如果内容和上次相同，不问 AI
+        if current_hash == self.last_screen_hash:
+            return (False, "内容未变化，跳过 AI 询问")
+        
+        # 内容变化，更新记录并询问 AI
+        self.last_screen_hash = current_hash
+        
+        return (True, "内容已变化，询问 AI")
     
     def ai_based_decision(self, content: str) -> tuple:
         """
@@ -198,7 +225,8 @@ class SmartConfirmer:
                 # 每 30 次检查输出状态
                 if count % 30 == 0:
                     elapsed = int(time.time() - self.start_time)
-                    print(f"[状态] 运行 {elapsed} 秒 | 确认 {self.confirm_count} 次 | 跳过 {self.skip_count} 次", flush=True)
+                    skip_info = f" | 跳过 {self.same_content_count} 次" if self.same_content_count > 0 else ""
+                    print(f"[状态] 运行 {elapsed} 秒 | 确认 {self.confirm_count} 次{skip_info}", flush=True)
                 
                 # 获取屏幕内容
                 content = self.get_screen_content()
@@ -209,9 +237,17 @@ class SmartConfirmer:
                 
                 # 判断是否确认
                 if self.use_ai:
-                    should_confirm, action, reason = self.ai_based_decision(content)
+                    # 先检查是否需要问 AI
+                    should_ask_ai, reason = self.should_ask_ai(content)
+                    
+                    if should_ask_ai:
+                        should_confirm, action, ai_reason = self.ai_based_decision(content)
+                        combined_reason = f"{ai_reason} ({reason})"
+                    else:
+                        should_confirm, action, combined_reason = (False, "", reason)
+                        self.same_content_count += 1
                 else:
-                    should_confirm, action, reason = self.rule_based_decision(content)
+                    should_confirm, action, combined_reason = self.rule_based_decision(content)
                 
                 if should_confirm:
                     print(f"\n[检测] {reason}")
