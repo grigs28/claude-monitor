@@ -108,6 +108,25 @@ class SmartConfirmer:
         # 只取最后 500 字符进行哈希
         return hashlib.md5(content[-500:].encode()).hexdigest()[:16]
     
+    def is_page_static(self, content: str) -> bool:
+        """检测页面是否静止（没有活动）"""
+        # 检查是否在 Claude Code 的空闲状态
+        idle_indicators = [
+            r'❯\s*$',  # 只有光标，没有输入
+            r'accept edits on.*shift\+tab',  # 提示信息
+            r'⏵⏵ accept edits',  # 提示等待
+        ]
+        
+        # 检查最后 300 字符
+        recent = content[-300:]
+        
+        # 如果包含空闲指示符，认为页面静止
+        for pattern in idle_indicators:
+            if re.search(pattern, recent):
+                return True
+        
+        return False
+    
     def should_ask_ai(self, content: str) -> tuple:
         """
         判断是否应该询问 AI
@@ -247,11 +266,10 @@ class SmartConfirmer:
                         should_confirm, action, combined_reason = (False, "", skip_reason)
                         self.same_content_count += 1
                 else:
-                    should_confirm, action, skip_reason = self.rule_based_decision(content)
-                    combined_reason = skip_reason
+                    should_confirm, action, combined_reason = self.rule_based_decision(content)
                 
                 if should_confirm:
-                    print(f"\n[检测] {reason}")
+                    print(f"\n[检测] {combined_reason}")
                     print(f"[执行] 发送按键: {action} + Enter")
                     
                     self.confirm(action)
@@ -259,7 +277,7 @@ class SmartConfirmer:
                     # 等待避免重复
                     time.sleep(3)
                 else:
-                    if skip_reason:  # 只在有原因时计数
+                    if combined_reason:  # 只在有原因时计数
                         self.skip_count += 1
                 
                 time.sleep(check_interval)
