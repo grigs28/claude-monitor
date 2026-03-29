@@ -4,18 +4,46 @@
 
 ## 🚀 快速开始
 
-### 推荐方式（智能确认器）
+### 启动 Claude Code + 自动确认器
+
+```bash
+# 1. 创建 tmux 会话并启动 Claude Code
+tmux new-session -s claude
+
+# 2. 在 tmux 会话中启动 Claude Code
+conda activate taf
+cd /mnt/SSD/webapp/TAF
+claude
+
+# 3. 在另一个终端启动自动确认器
+python3 /mnt/SSD/opt/claude-monitor/smart_confirmer.py claude
+```
+
+### 模式选择
 
 ```bash
 # 规则模式（快速，默认）
 python3 /mnt/SSD/opt/claude-monitor/smart_confirmer.py claude
 
 # AI 模式（智能判断）
-python3 /mnt/SSD/opt/claude-monitor/smart_confirmer.py claude --ai
-
-# 监控指定会话
-python3 /mnt/SSD/opt/claude-monitor/smart_confirmer.py mysession
+python3 /mnt/SDD/opt/claude-monitor/smart_confirmer.py claude --ai
 ```
+
+### 模型选择
+
+查看当前时间使用的模型：
+
+```bash
+python3 /mnt/SDD/opt/claude-monitor/switch_model.py
+```
+
+**时段说明**:
+- **高峰时段** (13:55-18:05): 
+  - Claude 用 glm-5.1
+  - 助手用 glm-4.7
+- **非高峰时间**: 
+  - Claude 用 glm-4.7
+  - 助手用 glm-turbo
 
 ## ⚠️ AI 模式重要说明
 
