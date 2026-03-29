@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 智能确认器 - 支持规则和 AI 两种模式
+支持 .env 配置文件
 """
 
 import subprocess
@@ -10,6 +11,9 @@ import time
 import re
 import sys
 import argparse
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 
 class SmartConfirmer:
     """智能确认器"""
@@ -18,9 +22,8 @@ class SmartConfirmer:
         self.session_name = session_name
         self.use_ai = use_ai
         
-        # AI 配置
-        self.api_url = "http://192.168.0.70:5564/v1/chat/completions"
-        self.model = "/opt/models/Qwen/Qwen3.5-27B-FP8"
+        # 加载 .env 配置
+        self.load_env_config()
         
         # 运行状态
         self.running = True
@@ -28,6 +31,20 @@ class SmartConfirmer:
         self.confirm_count = 0
         self.skip_count = 0
         self.last_confirm_time = 0
+    
+    def load_env_config(self):
+        """加载环境变量配置"""
+        # 加载 .env 文件
+        env_path = Path(__file__).parent / '.env'
+        load_dotenv(env_path)
+        
+        # AI 配置（从环境变量）
+        self.api_url = os.getenv('QWEN_API_URL', 'http://192.168.0.70:5564/v1/chat/completions')
+        self.model = os.getenv('QWEN_MODEL', '/opt/models/Qwen/Qwen3.5-27B-FP8')
+        self.qwen_timeout = int(os.getenv('QWEN_TIMEOUT', '60'))
+        
+        # 通用配置
+        self.check_interval = int(os.getenv('CHECK_INTERVAL', '2'))
     
     def get_screen_content(self):
         """获取屏幕内容"""
@@ -120,7 +137,7 @@ class SmartConfirmer:
                 self.api_url,
                 headers=headers,
                 json=data,
-                timeout=60
+                timeout=self.qwen_timeout
             )
             
             if response.status_code == 200:
@@ -171,7 +188,7 @@ class SmartConfirmer:
         print("=" * 60)
         print()
         
-        check_interval = 2 if self.use_ai else 1
+        check_interval = self.check_interval if self.use_ai else 1
         count = 0
         
         try:

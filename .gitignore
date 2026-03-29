@@ -54,3 +54,11 @@ Thumbs.db
 
 # Test outputs
 test_output/
+
+# Environment variables (IMPORTANT: contains sensitive config!)
+.env
+.env.local
+.env.*.local
+
+# Keep example config
+!.env.example
