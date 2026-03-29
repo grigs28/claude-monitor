@@ -1,311 +1,197 @@
 #!/usr/bin/env python3
 """
-智能确认器 - 支持规则和 AI 两种模式
-支持 .env 配置文件
+智能确认器 - git push 修复版（紧急）
+问题：可能没抓到完整屏幕，或冷却期阻止
 """
 
 import subprocess
 import requests
-import json
 import time
 import re
 import sys
 import argparse
 import os
 from pathlib import Path
-from dotenv import load_dotenv
 
-class SmartConfirmer:
-    """智能确认器"""
-    
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        pass
+
+class FixConfirmer:
     def __init__(self, session_name="claude", use_ai=False):
         self.session_name = session_name
         self.use_ai = use_ai
-        
-        # 加载 .env 配置
-        self.load_env_config()
-        
-        # 运行状态
         self.running = True
-        self.start_time = time.time()
         self.confirm_count = 0
-        self.skip_count = 0
-        self.last_confirm_time = 0
+        self.ai_count = 0
+        # 关键修复：启动时重置冷却期，确保第一次能立即点
+        self.last_confirm_time = 0  
+        self.cooldown = 2
         
-        # AI 模式：内容去重
-        self.last_screen_hash = ""
-        self.same_content_count = 0  # 记录相同内容次数
+        if use_ai:
+            env_path = Path(__file__).parent / '.env'
+            if env_path.exists():
+                load_dotenv(env_path)
+            self.api_url = os.getenv('QWEN_API_URL', 'http://192.168.0.70:5564/v1/chat/completions')
+            self.model = os.getenv('QWEN_MODEL', '/opt/models/Qwen/Qwen3.5-27B-FP8')
+            self.timeout = int(os.getenv('QWEN_TIMEOUT', '30'))
     
-    def load_env_config(self):
-        """加载环境变量配置"""
-        # 加载 .env 文件
-        env_path = Path(__file__).parent / '.env'
-        load_dotenv(env_path)
-        
-        # AI 配置（从环境变量）
-        self.api_url = os.getenv('QWEN_API_URL', 'http://192.168.0.70:5564/v1/chat/completions')
-        self.model = os.getenv('QWEN_MODEL', '/opt/models/Qwen/Qwen3.5-27B-FP8')
-        self.qwen_timeout = int(os.getenv('QWEN_TIMEOUT', '60'))
-        
-        # 通用配置
-        self.check_interval = int(os.getenv('CHECK_INTERVAL', '2'))
+    def get_screen(self):
+        try:
+            # 关键修复：抓1000字符，确保看到 "This command requires approval"
+            r = subprocess.run(['tmux', 'capture-pane', '-t', self.session_name, '-p', '-J'],
+                             capture_output=True, text=True, timeout=1)
+            content = r.stdout
+            if len(content) > 1000:
+                content = content[-1000:]
+            return content
+        except Exception as e:
+            print(f"[错误] {e}")
+            return ""
     
-    def get_screen_content(self):
-        """获取屏幕内容"""
-        result = subprocess.run(
-            ['tmux', 'capture-pane', '-t', self.session_name, '-p'],
-            capture_output=True,
-            text=True,
-            timeout=2
+    def should_confirm(self, text):
+        """
+        统一判断逻辑（规则+AI）
+        返回: (should, action, reason)
+        """
+        t = text.lower()
+        
+        # 调试：打印关键匹配（看实际抓到了什么）
+        has_approval = 'requires approval' in t
+        has_do_you = 'do you want' in t
+        has_proceed = 'proceed' in t
+        has_option1 = '1.' in text
+        has_arrow = '❯' in text
+        has_yes = 'yes' in t
+        
+        print(f"  [检测] approval={has_approval}, do_you={has_do_you}, proceed={has_proceed}, 1.={has_option1}, ❯={has_arrow}, yes={has_yes}")
+        
+        # 规则1：明确的确认提示（requires approval / Do you want / proceed）
+        if (has_approval or has_do_you or has_proceed) and (has_option1 or has_arrow):
+            # 有 always 选2，否则选1
+            if '2.' in text and ('always' in t or 'don\'t ask' in t or '’t ask' in t):  # 处理智能引号
+                return True, "2", "rule:always"
+            return True, "1", "rule:yes"
+        
+        # 规则不认识，检查是否有 Yes/No（给AI用）
+        has_options = has_option1 or has_arrow or ('yes' in t and 'no' in t)
+        
+        if self.use_ai and has_options:
+            # AI兜底
+            return self.ask_ai(text)
+        
+        # 不认识也没有Yes/No，跳过
+        return False, None, "skip"
+    
+    def ask_ai(self, text):
+        """AI判断"""
+        self.ai_count += 1
+        print("  → 调用AI...")
+        
+        prompt = (
+            "判断是否需要确认。屏幕最后300字符：\n```\n" + text[-300:] + "\n```\n"
+            "看到'Yes'选项就返回true选1，看到'always allow'选2，其他false。\n"
+            "JSON: {\"confirm\":true/false,\"action\":\"1\"/\"2\"}"
         )
-        return result.stdout
-    
-    def rule_based_decision(self, content: str) -> tuple:
-        """
-        基于规则的判断
-        返回: (should_confirm, action, reason)
-        """
-        now = time.time()
-        
-        # 防止频繁确认（至少间隔 3 秒）
-        if now - self.last_confirm_time < 3:
-            return (False, "", "距离上次确认不到 3 秒")
-        
-        # 检查是否在命令行
-        if re.search(r'[\[\(][^\]\)]+[\]\)].*[\$#%]\s*$', content[-500:]):
-            return (False, "", "在命令行中，跳过")
-        
-        # 检查确认提示
-        has_prompt = False
-        action = "1"
-        
-        confirm_keywords = [
-            r'Do you want to proceed',
-            r'always allow',
-            r'allow all edits',
-            r'don.t ask again'
-        ]
-        
-        for keyword in confirm_keywords:
-            if re.search(keyword, content[-1000:], re.IGNORECASE):
-                has_prompt = True
-                break
-        
-        if re.search(r'❯\s*\d+\.', content[-500:]) or re.search(r'\d+\.\s*Yes', content[-500:]):
-            has_prompt = True
-            
-            if re.search(r'always allow|don.t ask again', content[-1000:], re.IGNORECASE):
-                action = "2"
-        
-        if has_prompt:
-            return (True, action, "规则检测到确认提示")
-        
-        return (False, "", "未检测到确认提示")
-    
-    def get_screen_hash(self, content: str) -> str:
-        """生成屏幕内容哈希"""
-        import hashlib
-        # 只取最后 500 字符进行哈希
-        return hashlib.md5(content[-500:].encode()).hexdigest()[:16]
-    
-    def is_page_static(self, content: str) -> bool:
-        """检测页面是否静止（没有活动）"""
-        # 检查是否在 Claude Code 的空闲状态
-        idle_indicators = [
-            r'❯\s*$',  # 只有光标，没有输入
-            r'accept edits on.*shift\+tab',  # 提示信息
-            r'⏵⏵ accept edits',  # 提示等待
-        ]
-        
-        # 检查最后 300 字符
-        recent = content[-300:]
-        
-        # 如果包含空闲指示符，认为页面静止
-        for pattern in idle_indicators:
-            if re.search(pattern, recent):
-                return True
-        
-        return False
-    
-    def should_ask_ai(self, content: str) -> tuple:
-        """
-        判断是否应该询问 AI
-        返回: (should_ask, reason)
-        """
-        # 生成当前屏幕哈希
-        current_hash = self.get_screen_hash(content)
-        
-        # 如果内容和上次相同，不问 AI
-        if current_hash == self.last_screen_hash:
-            return (False, "内容未变化，跳过 AI 询问")
-        
-        # 内容变化，更新记录并询问 AI
-        self.last_screen_hash = current_hash
-        
-        return (True, "内容已变化，询问 AI")
-    
-    def ai_based_decision(self, content: str) -> tuple:
-        """
-        基于 AI 的判断
-        返回: (should_confirm, action, reason)
-        """
-        prompt = f"""你是 Claude Code 的自动确认助手。请分析屏幕内容并决定是否需要确认。
-
-屏幕内容（最后 1500 字符）：
-```
-{content[-1500:]}
-```
-
-请判断并返回 JSON：
-{{
-    "is_confirm_prompt": true/false,
-    "should_confirm": true/false,
-    "action": "1"/"2"/"3"/"no",
-    "reason": "简短原因说明",
-    "confidence": 0.0-1.0
-}}
-
-注意：
-- 只对 Claude Code 的确认提示进行确认
-- 如果在命令行或有错误，不要确认
-- 如果提示"always allow"或"don't ask again"，优先选择这些选项
-"""
         
         try:
-            headers = {"Content-Type": "application/json"}
-            data = {
-                "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.1
-            }
-            
-            response = requests.post(
+            r = requests.post(
                 self.api_url,
-                headers=headers,
-                json=data,
-                timeout=self.qwen_timeout
+                headers={"Content-Type": "application/json"},
+                json={
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1,
+                    "max_tokens": 50
+                },
+                timeout=self.timeout
             )
             
-            if response.status_code == 200:
-                result = response.json()
+            if r.status_code == 200:
+                result = r.json()
                 content = result['choices'][0]['message']['content']
-                parsed = json.loads(content)
-                
-                is_prompt = parsed.get("is_confirm_prompt", False)
-                should = parsed.get("should_confirm", False)
-                action = parsed.get("action", "1")
-                reason = parsed.get("reason", "")
-                confidence = parsed.get("confidence", 0)
-                
-                if is_prompt and should:
-                    return (True, action, f"AI判断: {reason} (置信度: {confidence:.1%})")
-                else:
-                    return (False, "", f"AI判断: 不需要确认 - {reason}")
+                confirm = 'true' in content.lower() and '"confirm":true' in content.replace(' ', '')
+                action = "2" if '"action":"2"' in content else "1"
+                print(f"  [AI结果] confirm={confirm}, action={action}")
+                return confirm, action, "ai"
             else:
-                return (False, "", f"AI错误: {response.status_code}")
-        
+                print(f"  [AI错误] {r.status_code}")
+                return False, None, "api_error"
         except Exception as e:
-            return (False, "", f"AI请求失败: {str(e)[:50]}")
+            print(f"  [AI异常] {e}")
+            return False, None, "exception"
     
-    def confirm(self, action: str):
-        """执行确认"""
-        subprocess.run(['tmux', 'send-keys', '-t', self.session_name, action], 
-                     check=False)
-        time.sleep(0.1)
-        subprocess.run(['tmux', 'send-keys', '-t', self.session_name, 'Enter'], 
-                     check=False)
-        self.last_confirm_time = time.time()
-        self.confirm_count += 1
-    
-    def monitor_loop(self):
-        """监控循环"""
-        mode = "AI模式" if self.use_ai else "规则模式"
-        
-        print("=" * 60)
-        print(f"智能确认器 ({mode})")
-        print("=" * 60)
-        print(f"[会话] {self.session_name}")
-        if self.use_ai:
-            print(f"[模型] {self.model}")
-            print(f"[API] {self.api_url}")
-        else:
-            print("[信息] 使用规则匹配，快速响应")
-        print("[信息] 按 Ctrl+C 停止")
-        print("=" * 60)
-        print()
-        
-        check_interval = self.check_interval if self.use_ai else 1
-        count = 0
-        
+    def send(self, key):
         try:
-            while self.running:
-                count += 1
-                
-                # 每 30 次检查输出状态
-                if count % 30 == 0:
-                    elapsed = int(time.time() - self.start_time)
-                    skip_info = f" | 跳过 {self.same_content_count} 次" if self.same_content_count > 0 else ""
-                    print(f"[状态] 运行 {elapsed} 秒 | 确认 {self.confirm_count} 次{skip_info} | 内容未变化 哈哈🦐", flush=True)
-                
-                # 获取屏幕内容
-                content = self.get_screen_content()
-                
-                if not content:
-                    time.sleep(check_interval)
-                    continue
-                
-                # 判断是否确认
-                if self.use_ai:
-                    # 先检查是否需要问 AI
-                    should_ask_ai, skip_reason = self.should_ask_ai(content)
-                    
-                    if should_ask_ai:
-                        should_confirm, action, ai_reason = self.ai_based_decision(content)
-                        combined_reason = f"{ai_reason} ({skip_reason})"
-                    else:
-                        should_confirm, action, combined_reason = (False, "", skip_reason)
-                        self.same_content_count += 1
-                else:
-                    should_confirm, action, combined_reason = self.rule_based_decision(content)
-                
-                if should_confirm:
-                    print(f"\n[检测] {combined_reason}")
-                    print(f"[执行] 发送按键: {action} + Enter")
-                    
-                    self.confirm(action)
-                    
-                    # 等待避免重复
-                    time.sleep(3)
-                else:
-                    if combined_reason:  # 只在有原因时计数
-                        self.skip_count += 1
-                
-                time.sleep(check_interval)
+            print(f"  → 发送按键 '{key}'...")
+            subprocess.run(['tmux', 'send-keys', '-t', self.session_name, key], 
+                          check=False, timeout=1)
+            time.sleep(0.05)
+            subprocess.run(['tmux', 'send-keys', '-t', self.session_name, 'Enter'], 
+                          check=False, timeout=1)
+            self.confirm_count += 1
+            self.last_confirm_time = time.time()  # 记录确认时间
+            print(f"\n>>> [成功] 第{self.confirm_count}次确认 <<<\n")
+            return True
+        except Exception as e:
+            print(f"\n>>> [失败] {e} <<<\n")
+            return False
+    
+    def run(self):
+        mode = "规则+AI" if self.use_ai else "纯规则"
+        print("=" * 70)
+        print(f"紧急修复版 - 智能确认器 ({mode})")
+        print(f"监控: {self.session_name} | 冷却期: {self.cooldown}秒")
+        print("=" * 70)
+        print("如果卡住，检查上面[检测]输出是否为True")
+        print("=" * 70)
         
-        except KeyboardInterrupt:
-            print("\n\n" + "=" * 60)
-            print("停止监控")
-            print("=" * 60)
-            elapsed = int(time.time() - self.start_time)
-            print(f"运行时长: {elapsed} 秒")
-            print(f"确认次数: {self.confirm_count}")
-            print(f"跳过次数: {self.skip_count}")
-            print(f"模式: {mode}")
-            print("=" * 60)
-
-def main():
-    parser = argparse.ArgumentParser(description="智能确认器")
-    parser.add_argument("session", nargs="?", default="claude", help="tmux 会话名")
-    parser.add_argument("--ai", action="store_true", help="使用 AI 模式（默认：规则模式）")
-    parser.add_argument("--rule", action="store_true", help="使用规则模式")
-    
-    args = parser.parse_args()
-    
-    # 默认使用规则模式
-    use_ai = args.ai
-    
-    confirmer = SmartConfirmer(args.session, use_ai)
-    confirmer.monitor_loop()
+        check_num = 0
+        while self.running:
+            check_num += 1
+            
+            # 冷却期显示
+            elapsed = time.time() - self.last_confirm_time
+            if elapsed < self.cooldown:
+                print(f"\r[检查{check_num}] 冷却中({self.cooldown-int(elapsed)}s)... ", end="")
+                time.sleep(0.5)
+                continue
+            
+            print(f"\n[检查{check_num}] 获取屏幕...")
+            text = self.get_screen()
+            
+            if not text:
+                print("  [空屏幕]")
+                time.sleep(1)
+                continue
+            
+            # 显示抓到的关键部分（看有没有 requires approval）
+            preview = text[-200:].replace('\n', ' ')
+            print(f"  [屏幕] ...{preview}")
+            
+            # 判断
+            should, action, reason = self.should_confirm(text)
+            
+            if should:
+                print(f"  [决策] 确认! 动作={action}, 原因={reason}")
+                if self.send(action):
+                    time.sleep(1.5)  # 确认后多等一会
+                else:
+                    time.sleep(0.5)
+            else:
+                print(f"  [决策] 跳过 ({reason})")
+                time.sleep(1)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("session", nargs="?", default="claude", help="tmux 会话名")
+    parser.add_argument("--ai", action="store_true", help="AI兜底")
+    args = parser.parse_args()
+    
+    c = FixConfirmer(args.session, use_ai=args.ai)
+    try:
+        c.run()
+    except KeyboardInterrupt:
+        print(f"\n\n总计: 确认{c.confirm_count}次" + (f", AI{c.ai_count}次" if c.use_ai else ""))
