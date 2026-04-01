@@ -64,5 +64,9 @@ test_output/
 .stop
 .pid
 
-# Keep example config
+# Model schedule config (contains API tokens!)
+.model_schedules.json
+
+# Keep example configs
 !.env.example
+!.model_schedules.json.example

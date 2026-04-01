@@ -1,0 +1,25 @@
+{
+  "settings_path": "/root/.claude/settings.json",
+  "check_interval": 60,
+  "default": {
+    "ANTHROPIC_BASE_URL": "https://api.example.com/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "your-default-api-token",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "model-haiku",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "model-sonnet",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "model-opus"
+  },
+  "schedules": [
+    {
+      "name": "时段名称",
+      "start": "09:00",
+      "end": "18:00",
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://api.another-provider.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "your-scheduled-api-token",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "model-haiku",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "model-sonnet",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "model-opus"
+      }
+    }
+  ]
+}
