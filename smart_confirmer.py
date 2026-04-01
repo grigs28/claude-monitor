@@ -255,8 +255,9 @@ class HookHandler:
         r'make\b',
     ]
 
-    def __init__(self, use_ai=False):
+    def __init__(self, use_ai=False, allow_all=False):
         self.use_ai = use_ai
+        self.allow_all = allow_all
 
         env_path = Path(__file__).parent / '.env'
         if env_path.exists():
@@ -414,18 +415,23 @@ class HookHandler:
             self._output("deny", deny_reason)
             return
 
-        # 2. 允许规则
+        # 2. 全部允许
+        if self.allow_all:
+            self._output("allow", f"allow-all 模式: {tool_name}")
+            return
+
+        # 3. 允许规则
         allow_reason = self.check_allow(tool_name, tool_input)
         if allow_reason:
             self._output("allow", allow_reason)
             return
 
-        # 3. AI 兜底
+        # 4. AI 兜底
         if self.use_ai:
             self._ai_decide(tool_name, tool_input)
             return
 
-        # 4. 无匹配，走默认流程
+        # 5. 无匹配，走默认流程
         self._log(tool_name, "默认", "无匹配规则")
 
 
@@ -435,10 +441,11 @@ if __name__ == "__main__":
     parser.add_argument("--tmux", action="store_true", help="tmux 轮询模式")
     parser.add_argument("--hook", action="store_true", help="PermissionRequest Hook 模式")
     parser.add_argument("--ai", action="store_true", help="AI 兜底")
+    parser.add_argument("--allow-all", action="store_true", help="Hook 模式下全部允许（仍拦截危险命令）")
     args = parser.parse_args()
 
     if args.hook:
-        HookHandler(use_ai=args.ai).run_hook()
+        HookHandler(use_ai=args.ai, allow_all=args.allow_all).run_hook()
     elif args.tmux:
         FixConfirmer(args.session, use_ai=args.ai).run()
     else:
