@@ -60,5 +60,9 @@ test_output/
 .env.local
 .env.*.local
 
+# Runtime control files
+.stop
+.pid
+
 # Keep example config
 !.env.example
