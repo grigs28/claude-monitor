@@ -4,49 +4,60 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Claude Monitor（智能确认器）是一个自动化工具，用于监控 tmux 中运行的 Claude Code 会话，自动响应权限确认提示（如 "This command requires approval"、"Do you want to proceed"）。
+Claude Monitor（智能确认器）是一个自动化工具，用于监控 tmux 中运行的 Claude Code 会话，自动响应权限确认提示。
 
 ## Running
 
 ```bash
-# 纯规则模式（无需AI）
-python smart_confirmer.py claude
+# 一键配置（推荐，写入 settings.json）
+python3 smart_confirmer.py --full --fallback --setup
 
-# AI 兜底模式（规则优先，不认识时调用本地 Qwen 模型）
-python smart_confirmer.py claude --ai
+# Tmux 模式
+python3 smart_confirmer.py claude --tmux --ai
 
-# 指定 tmux 会话名
-python smart_confirmer.py my_session --ai
+# Hook 模式（由 Claude Code 自动调用）
+python3 smart_confirmer.py --full
+
+# 独立模型切换
+python3 smart_confirmer.py claude --model-switch
 ```
+
+## CLI Arguments
+
+| 参数 | 说明 |
+|------|------|
+| `--tmux` | Tmux 轮询模式 |
+| `--hook` | PermissionRequest Hook 模式 |
+| `--model-switch` | 模型定时切换 |
+| `--fallback` | StopFailure 连续失败后切换备用模型 |
+| `--full` | 等价于 `--hook --ai --allow-all --model-switch` |
+| `--ai` | AI 兜底 |
+| `--allow-all` | 全部允许（仍拦截危险命令） |
+| `--setup` | 自动配置 settings.json |
+| `--fallback-threshold N` | 失败阈值（默认 3） |
+| `--fallback-reset` | 重置 fallback 状态 |
 
 ## Dependencies
 
 - `requests` — AI 模式下调用 API
-- `python-dotenv` — 加载 `.env` 配置（可选，缺失时使用默认值）
-- `tmux` — 必须可用，用于捕获屏幕和发送按键
+- `python-dotenv` — 加载 `.env` 配置（可选）
+- `tmux` — Tmux 模式必需
 
 ## Architecture
 
-单文件应用 `smart_confirmer.py`，核心类 `FixConfirmer`：
+单文件应用 `smart_confirmer.py`，四个核心类：
 
-1. **监控循环** (`run`) — 持续轮询 tmux 屏幕内容，带 2 秒冷却期防止重复确认
-2. **屏幕捕获** (`get_screen`) — 通过 `tmux capture-pane` 获取最后 1000 字符
-3. **规则判断** (`should_confirm`) — 关键词匹配（`requires approval`、`do you want`、`proceed`），优先选 "always allow"（选项2），否则选 "Yes"（选项1）
-4. **AI 兜底** (`ask_ai`) — 规则不认识时调用本地 Qwen API 判断
-5. **按键发送** (`send`) — 通过 `tmux send-keys` 发送选项编号 + Enter
+1. **`FixConfirmer`** — Tmux 轮询，监控屏幕自动确认
+2. **`HookHandler`** — PermissionRequest hook，规则 + AI allow/deny
+3. **`FallbackHandler`** — StopFailure hook，连续失败后切换备用模型（3 次阈值，文件持久化）
+4. **`ModelSwitcher`** — 后台线程，按时间段切换模型（仅在 Claude 空闲时）
 
-判断优先级：规则匹配 → AI 兜底（需 `--ai`）→ 跳过
+关键机制：
+- `.fallback_active` 文件存在时，ModelSwitcher 跳过切换
+- PermissionRequest 成功触发时自动清除 fallback 状态
+- `.model_schedules.json` 统一管理 default/schedules/fallback_models 配置
 
 ## Configuration
 
-通过 `.env` 文件配置（参考 `.env.example`）：
-
-```ini
-QWEN_API_URL=http://192.168.0.70:5564/v1/chat/completions  # 本地 AI API
-QWEN_MODEL=/opt/models/Qwen/Qwen3.5-27B-FP8               # 模型路径
-QWEN_TIMEOUT=60                                             # API 超时秒数
-```
-
-## Archive
-
-`.archive/` 目录包含历史迭代版本（多种确认器实现），当前活跃版本为 `smart_confirmer.py`。
+`.env` — AI API、冷却时间、上下文大小等
+`.model_schedules.json` — 模型调度 + 备用模型（含 API Token，已在 .gitignore 中）
