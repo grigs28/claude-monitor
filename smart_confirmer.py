@@ -463,11 +463,15 @@ class FallbackHandler:
         if not config_path.exists():
             print("[Fallback] 错误: .model_schedules.json 不存在", file=sys.stderr)
             self.fallback_models = []
+            self.default_env = {}
+            self.schedules = []
             self.settings_path = Path.home() / '.claude' / 'settings.json'
         else:
             with open(config_path) as f:
                 cfg = json.load(f)
             self.fallback_models = cfg.get('fallback_models', [])
+            self.default_env = cfg.get('default', {})
+            self.schedules = cfg.get('schedules', [])
             self.settings_path = Path(os.path.expanduser(cfg.get('settings_path', '~/.claude/settings.json')))
 
         self.threshold = threshold
@@ -515,10 +519,6 @@ class FallbackHandler:
         return False
 
     def _do_switch(self):
-        if not self.fallback_models:
-            print("[Fallback] 无备用模型配置", file=sys.stderr)
-            return False
-
         try:
             with open(self.settings_path) as f:
                 settings = json.load(f)
@@ -526,19 +526,46 @@ class FallbackHandler:
             print(f"[Fallback] 读取 settings.json 失败: {e}", file=sys.stderr)
             return False
 
-        current_env = settings.get('env', {})
+        current_model = settings.get('env', {}).get('ANTHROPIC_DEFAULT_OPUS_MODEL', '')
+
+        # 1. 先尝试切换到当前时间对应的 schedule 或 default
+        target_env, target_name = self._get_schedule_env()
+        target_model = target_env.get('ANTHROPIC_DEFAULT_OPUS_MODEL', '')
+
+        if target_model and target_model != current_model:
+            bak = self.settings_path.with_suffix('.json.bak')
+            try:
+                shutil.copy2(self.settings_path, bak)
+            except Exception:
+                pass
+
+            merged_env = dict(settings.get('env', {}))
+            merged_env.update(target_env)
+            settings['env'] = merged_env
+            with open(self.settings_path, 'w') as f:
+                json.dump(settings, f, indent=2, ensure_ascii=False)
+
+            self.set_count(0)
+            ts = time.strftime('%H:%M:%S')
+            print(f"[{ts}] [Fallback] 已切换到时间表模型: {target_name}", file=sys.stderr)
+            return True
+
+        # 2. 时间表模型也失败，尝试 fallback_models
+        if not self.fallback_models:
+            ts = time.strftime('%H:%M:%S')
+            print(f"[{ts}] [Fallback] 时间表模型 {target_name} 已失败，无备用模型", file=sys.stderr)
+            return False
+
         for fb in sorted(self.fallback_models, key=lambda x: x.get('priority', 99)):
             fb_env = fb['env']
             fb_name = fb['name']
 
-            # 已是此模型则跳过
-            if current_env.get('ANTHROPIC_DEFAULT_OPUS_MODEL') == fb_env.get('ANTHROPIC_DEFAULT_OPUS_MODEL'):
+            if current_model == fb_env.get('ANTHROPIC_DEFAULT_OPUS_MODEL'):
                 ts = time.strftime('%H:%M:%S')
                 print(f"[{ts}] [Fallback] 已在备用模型 {fb_name} 上", file=sys.stderr)
                 self.set_active(fb_name)
                 return False
 
-            # 备份并写入
             bak = self.settings_path.with_suffix('.json.bak')
             try:
                 shutil.copy2(self.settings_path, bak)
@@ -554,11 +581,27 @@ class FallbackHandler:
             self.set_active(fb_name)
             self.set_count(0)
             ts = time.strftime('%H:%M:%S')
-            print(f"[{ts}] [Fallback] 已切换到备用模型: {fb_name}", file=sys.stderr)
+            print(f"[{ts}] [Fallback] 时间表模型已失败，切换到备用模型: {fb_name}", file=sys.stderr)
             return True
 
-        print("[Fallback] 所有备用模型均已尝试", file=sys.stderr)
+        ts = time.strftime('%H:%M:%S')
+        print(f"[{ts}] [Fallback] 所有模型均已尝试且失败", file=sys.stderr)
         return False
+
+    def _get_schedule_env(self):
+        """获取当前时间对应的 schedule 或 default 配置"""
+        now = time.localtime()
+        now_min = now.tm_hour * 60 + now.tm_min
+        for s in self.schedules:
+            start = int(s['start'].split(':')[0]) * 60 + int(s['start'].split(':')[1])
+            end = int(s['end'].split(':')[0]) * 60 + int(s['end'].split(':')[1])
+            if start <= end:
+                if start <= now_min < end:
+                    return s['env'], s['name']
+            else:  # crosses midnight
+                if now_min >= start or now_min < end:
+                    return s['env'], s['name']
+        return self.default_env, '默认'
 
     def reset(self):
         """手动重置失败计数和激活状态"""
