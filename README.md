@@ -43,7 +43,7 @@ pip install requests python-dotenv
 
 ```bash
 # 一键配置（推荐）
-# 安装 PermissionRequest hook (--full) + StopFailure hook (--fallback --model-switch)
+# 安装 3 个 hook: PermissionRequest (--full) + StopFailure (--fallback) + Stop (--model-switch)
 python3 smart_confirmer.py --full --setup
 
 # 仅配置权限确认
@@ -70,7 +70,7 @@ python smart_confirmer.py [session] [模式] [选项]
 | `--model-switch` | 模型时间表检查（单独使用时循环；hook 调用时单次检查） |
 | `--fallback` | StopFailure 事件：连续失败后切换备用模型 |
 | **选项** | |
-| `--full` | 等价于 `--hook --ai --allow-all` |
+| `--full` | 等价于 `--hook --ai --allow-all`（`--setup` 时额外安装 StopFailure→`--fallback` 和 Stop→`--model-switch`） |
 | `--ai` | 启用 AI 兜底（规则不匹配时调用本地模型） |
 | `--allow-all` | Hook 模式下全部允许（仍拦截危险命令） |
 | `--fallback-threshold N` | 连续失败多少次后切换备用模型（默认 3） |
@@ -90,7 +90,7 @@ python3 smart_confirmer.py claude --tmux --ai --model-switch
 echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | python3 smart_confirmer.py --hook
 
 # 手动测试 StopFailure + 模型检查
-echo '{"error":"rate_limit"}' | python3 smart_confirmer.py --fallback --model-switch
+echo '{"error":"rate_limit"}' | python3 smart_confirmer.py --fallback
 
 # 重置 fallback 状态
 python3 smart_confirmer.py --fallback-reset
@@ -160,7 +160,7 @@ python smart_confirmer.py --tmux claude --ai --model-switch  # + 定时切换
 | 命令 | 行为 |
 |------|------|
 | `python3 ... --model-switch` | 独立进程，循环运行（需后台启动） |
-| `python3 ... --fallback --model-switch` | StopFailure 触发时单次检查模型时间表 |
+| Stop hook 自动触发 | 每次回复后单次检查模型时间表 |
 | `python3 ... --tmux --model-switch` | 与 Tmux 模式并行，后台守护线程循环 |
 
 与 `--tmux` 并行时，仅在 Claude 空闲时切换，避免打断 API 调用。
@@ -179,7 +179,7 @@ python smart_confirmer.py --tmux claude --ai --model-switch  # + 定时切换
 不计入的错误：`max_output_tokens`、`invalid_request`
 
 ```bash
-# 一键配置（PermissionRequest + StopFailure 含模型检查）
+# 一键配置（PermissionRequest + StopFailure + Stop 三个 hook）
 python3 smart_confirmer.py --full --setup
 
 # 手动重置

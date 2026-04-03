@@ -761,10 +761,20 @@ class ModelSwitcher(threading.Thread):
         Args:
             dry_run: True 时只检测不写入 settings.json（避免触发 Claude Code 重载导致滚屏）
         """
+        log_file = str(Path(__file__).parent / 'hook.log')
+        def log(msg):
+            ts = time.strftime('%Y-%m-%d %H:%M:%S')
+            try:
+                with open(log_file, 'a') as f:
+                    f.write(f"[{ts}] {msg}\n")
+            except Exception:
+                pass
+
         if not self._valid:
+            log("[模型切换] 配置无效，跳过")
             return
         if self.fallback_active_file.exists():
-            print("[模型切换] fallback 已激活，跳过", file=sys.stderr)
+            log("[模型切换] fallback 已激活，跳过")
             return
         target_env, target_name = self._get_schedule_env()
         # 直接读文件比对，不依赖 self.current_name（hook 每次是新实例）
@@ -772,22 +782,20 @@ class ModelSwitcher(threading.Thread):
         try:
             with open(self.settings_path) as f:
                 current_model = json.load(f).get('env', {}).get('ANTHROPIC_DEFAULT_OPUS_MODEL')
-        except Exception:
-            pass
-        if target_env.get('ANTHROPIC_DEFAULT_OPUS_MODEL') == current_model:
-            ts = time.strftime('%H:%M:%S')
-            print(f"[{ts}] [模型切换] {target_name}（已是目标）", file=sys.stderr)
+        except Exception as e:
+            log(f"[模型切换] 读取 settings.json 失败: {e}")
+        target_model = target_env.get('ANTHROPIC_DEFAULT_OPUS_MODEL')
+        log(f"[模型切换] 目标={target_name}({target_model}) 当前={current_model}")
+        if target_model == current_model:
+            log(f"[模型切换] {target_name}（已是目标）")
             return
         if dry_run:
-            ts = time.strftime('%H:%M:%S')
-            print(f"[{ts}] [模型切换] 需要切换到 {target_name}（dry_run，不写入）", file=sys.stderr)
+            log(f"[模型切换] 需要切换到 {target_name}（dry_run，不写入）")
             return
         if self._do_switch(target_env, target_name):
-            ts = time.strftime('%H:%M:%S')
-            print(f"[{ts}] [模型切换] 已切换到: {target_name}", file=sys.stderr)
+            log(f"[模型切换] 已切换到: {target_name}")
         else:
-            ts = time.strftime('%H:%M:%S')
-            print(f"[{ts}] [模型切换] 当前已是: {target_name}", file=sys.stderr)
+            log(f"[模型切换] 当前已是: {target_name}")
 
 
 def do_setup(args):
@@ -797,7 +805,7 @@ def do_setup(args):
     --full --setup: 安装 3 个独立 hook
       - PermissionRequest → python3 script --full（Hook + AI + 全部允许）
       - StopFailure      → python3 script --fallback（连续失败切换备用模型）
-      - ModelSwitcher    → python3 script --model-switch（定时切换模型，独立进程）
+      - Stop             → python3 script --model-switch（每次回复后检查时间表）
 
     --hook --setup: 只安装 PermissionRequest hook
     --fallback --setup: 只安装 StopFailure hook
@@ -826,20 +834,22 @@ def do_setup(args):
 
     hooks = settings.get('hooks', {})
 
-    # --full --setup：安装 2 个 hook
+    # --full --setup：安装 3 个 hook
     if args.full:
         # 1. PermissionRequest: hook + ai + allow-all
         cmd_full = f"python3 {script} --full"
         hooks["PermissionRequest"] = [{"hooks": [{"type": "command", "command": cmd_full}]}]
         print(f"[Setup] PermissionRequest → {cmd_full}")
 
-        # 2. StopFailure: fallback + model-switch（StopFailure 触发后顺便检查模型时间表）
-        cmd_fallback = f"python3 {script} --fallback --model-switch"
+        # 2. StopFailure: 纯 fallback（故障转移）
+        cmd_fallback = f"python3 {script} --fallback"
         hooks["StopFailure"] = [{"hooks": [{"type": "command", "command": cmd_fallback}]}]
         print(f"[Setup] StopFailure → {cmd_fallback}")
 
-        # 注意：--tmux --model-switch 会启动后台循环线程，定时检查模型切换
-        print(f"[Setup] 如需 --tmux 模式自动切换，另行运行: python3 {script} --tmux --model-switch")
+        # 3. Stop: 每次回复后检查模型时间表
+        cmd_switch = f"python3 {script} --model-switch"
+        hooks["Stop"] = [{"hooks": [{"type": "command", "command": cmd_switch}]}]
+        print(f"[Setup] Stop → {cmd_switch}")
 
     # --hook --setup：只安装 PermissionRequest
     elif args.hook:
@@ -893,25 +903,26 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if args.fallback:
-        # StopFailure hook 独立模式
-        handler = FallbackHandler(threshold=args.fallback_threshold)
         raw = sys.stdin.read()
+
+        # --model-switch 先检查时间表，切换后再 fallback
+        if args.model_switch:
+            ModelSwitcher(args.session, threading.Event()).check_and_switch()
+
+        # StopFailure hook 需要 stdin JSON
         if raw.strip():
+            handler = FallbackHandler(threshold=args.fallback_threshold)
             try:
                 input_data = json.loads(raw)
                 error_type = input_data.get('error', 'unknown')
             except json.JSONDecodeError:
                 error_type = 'unknown'
             handler.handle_stop_failure(error_type)
-        else:
+        elif not args.model_switch:
             print("[Fallback] 从 stdin 读取 StopFailure JSON，由 Claude Code 自动调用。", file=sys.stderr)
             print("手动测试:", file=sys.stderr)
             print('  echo \'{"error":"rate_limit"}\' | python3 smart_confirmer.py --fallback', file=sys.stderr)
             sys.exit(1)
-
-        # --model-switch 附带：StopFailure 触发后顺便检查模型时间表
-        if args.model_switch:
-            ModelSwitcher(args.session, threading.Event()).check_and_switch()
     elif args.hook or args.full:
         HookHandler(use_ai=args.ai or args.full, allow_all=args.allow_all or args.full).run_hook()
     elif args.tmux:
