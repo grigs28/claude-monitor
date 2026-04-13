@@ -124,7 +124,8 @@ class FixConfirmer:
 
             if r.status_code == 200:
                 result = r.json()
-                content = result['choices'][0]['message']['content']
+                msg = result['choices'][0]['message']
+                content = msg.get('content') or msg.get('reasoning', '')
                 confirm = 'true' in content.lower() and '"confirm":true' in content.replace(' ', '')
                 action = "2" if '"action":"2"' in content else "1"
                 print(f"[AI] 结果 confirm={confirm}, action={action}")
@@ -385,7 +386,8 @@ class HookHandler:
             )
 
             if r.status_code == 200:
-                content = r.json()['choices'][0]['message']['content']
+                msg = r.json()['choices'][0]['message']
+                content = msg.get('content') or msg.get('reasoning', '')
                 allow = bool(re.search(r'"allow"\s*:\s*true', content, re.IGNORECASE))
                 m = re.search(r'"reason"\s*:\s*"([^"]*)"', content)
                 reason = m.group(1) if m else "AI判断"
